@@ -1,0 +1,60 @@
+name: bench
+
+# Runs the wazero-embedded matchlen benchmark on Linux/amd64 (GH-Actions default)
+# and Linux/arm64 (GH-Actions ARM runner). Publishes the raw ns/op + MB/s output
+# to the run's summary so we can compare the crossover point + peak-win against
+# the darwin/arm64 M4 numbers already in the README.
+#
+# Manual trigger only — this bench is a follow-up on the proto, not a
+# per-commit gate.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'verify/**'
+      - 'matchlen.wat'
+      - 'matchlen.wasm'
+      - '.github/workflows/bench.yml'
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.4'
+          check-latest: true
+
+      - name: Runtime info
+        run: |
+          uname -m
+          go env GOOS GOARCH GOAMD64 GOARM64 || true
+          cat /proc/cpuinfo | grep -m1 "model name\|Hardware\|Processor" || true
+
+      - name: Build matchlen.wasm
+        run: |
+          # WABT is packaged as `wabt` on ubuntu.
+          sudo apt-get update && sudo apt-get install -y wabt
+          wat2wasm matchlen.wat -o matchlen.wasm
+          wc -c matchlen.wasm
+
+      - name: Bench (verify pkg, benchtime=2s)
+        working-directory: verify
+        run: |
+          set -o pipefail
+          go test -bench=BenchmarkMatchlen -benchtime=2s -run=^$ -count=1 . | tee bench.out
+
+      - name: Publish summary
+        working-directory: verify
+        run: |
+          echo "## ${{ matrix.os }} — $(uname -m)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "^Benchmark" bench.out >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
