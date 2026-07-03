@@ -1,9 +1,14 @@
-// Package matchlenwasm is a proof-of-concept wasm-SIMD (v128) kernel for the
+// Package matchlenwasm is the wasm-SIMD (v128) kernel for the
 // go-simd/matchlen common-prefix primitive. The kernel lives in a small
 // companion WebAssembly module (matchlen.wasm, compiled from matchlen.wat
 // via wat2wasm) and is called from Go via //go:wasmimport.
 //
-// This is the SEVENTH target for go-simd — after the 6 native architectures
+// matchlen.wat is programmatically emitted by go-asmgen/wasm/matchlen —
+// see generate.go for the pinned generator version. The regeneration is
+// enforced in CI by .github/workflows/wasm-drift.yml, so the checked-in
+// .wat / .wasm cannot silently diverge from the generator output.
+//
+// This is the seventh target for go-simd — after the 6 native architectures
 // (amd64/arm64/riscv64/loong64/ppc64le/s390x) it adds js/wasm + wasip1/wasm.
 // The Go compiler does not emit wasm-SIMD (v128) from Go code today; this
 // scaffolding is the practical work-around for pure-Go SIMD on wasm.
