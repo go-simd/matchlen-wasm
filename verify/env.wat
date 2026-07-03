@@ -6,4 +6,5 @@
 ;; In production (Go host via //go:wasmimport) the memory the kernel sees is
 ;; Go's own linear memory; this env module is a test-only stand-in.
 (module
-  (memory (export "memory") 1))
+  ;; 32 pages = 2 MiB — enough for the benchmark's two 1-MiB inputs.
+  (memory (export "memory") 32))

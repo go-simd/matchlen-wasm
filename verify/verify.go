@@ -21,13 +21,15 @@ import (
 )
 
 // envWasm is the trivial companion module (env.wat compiled) that just
-// exports a 1-page linear memory named "memory". The matchlen kernel imports
-// (env, memory), so instantiating this as "env" first satisfies that import.
-// In production (Go host via //go:wasmimport) the Go wasm runtime provides
-// its own linear memory; this env module is a test-only stand-in.
+// exports a 32-page (2 MiB) linear memory named "memory". The matchlen
+// kernel imports (env, memory), so instantiating this as "env" first
+// satisfies that import. 32 pages is enough for two 1 MiB inputs at
+// offsets 0 and 0x100000 side by side. In production (Go host via
+// //go:wasmimport) the Go wasm runtime provides its own linear memory;
+// this env module is a test-only stand-in.
 var envWasm = []byte{
 	0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
-	0x05, 0x03, 0x01, 0x00, 0x01, // Memory section: 1 memory, min 1 page
+	0x05, 0x03, 0x01, 0x00, 0x20, // Memory section: 1 memory, min 32 pages
 	0x07, 0x0a, 0x01, 0x06, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x02, 0x00, // Export "memory"
 }
 
