@@ -1,0 +1,79 @@
+name: wasm-drift
+
+# Guardrails against hand-edited matchlen.wat / matchlen.wasm drift.
+# The canonical source of truth is the go-asmgen/wasm/matchlen generator
+# (pinned at a specific version in generate.go). This job runs
+# `go generate ./...` + `wat2wasm` and fails if the checked-in
+# matchlen.wat or matchlen.wasm don't match the regenerated output — so
+# a contributor cannot silently diverge the WAT from the emitter.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'matchlen.wat'
+      - 'matchlen.wasm'
+      - 'generate.go'
+      - 'Makefile'
+      - '.github/workflows/wasm-drift.yml'
+
+concurrency:
+  group: wasm-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install WABT (wat2wasm / wasm2wat)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y wabt
+
+      - name: Regenerate matchlen.wat + matchlen.wasm
+        run: |
+          set -eo pipefail
+          # Snapshot committed bytes before regenerating so we can diff.
+          cp matchlen.wat  matchlen.wat.committed
+          cp matchlen.wasm matchlen.wasm.committed
+          go generate ./...
+          wat2wasm matchlen.wat -o matchlen.wasm
+
+      - name: Check for drift
+        run: |
+          set -eo pipefail
+          if ! diff -u matchlen.wat.committed matchlen.wat; then
+            {
+              echo "## ❌ matchlen.wat is out of sync with the pinned generator"
+              echo ""
+              echo "The committed matchlen.wat differs from the output of the pinned"
+              echo "generator (\`go-asmgen/wasm/matchlen\`, see \`generate.go\`)."
+              echo ""
+              echo "Run \`go generate ./... && wat2wasm matchlen.wat -o matchlen.wasm\`"
+              echo "at the repo root and commit the regenerated files."
+            } >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          if ! diff -q matchlen.wasm.committed matchlen.wasm; then
+            {
+              echo "## ❌ matchlen.wasm is out of sync with the regenerated matchlen.wat"
+              echo ""
+              echo "matchlen.wat matches the generator, but matchlen.wasm was not"
+              echo "rebuilt from it. Run \`wat2wasm matchlen.wat -o matchlen.wasm\`"
+              echo "and commit the result."
+            } >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          echo "## ✅ Both matchlen.wat and matchlen.wasm match the pinned generator." >> $GITHUB_STEP_SUMMARY
+
+      - name: Run wazero verify (11 e2e cases)
+        run: |
+          cd verify
+          go run . ../matchlen.wasm
