@@ -1,0 +1,235 @@
+name: wasm-bench
+
+# Wazero-driven benchmark of matchlen.wasm on stock ubuntu-24.04 runners.
+# The kernel is arch-agnostic (wasm-SIMD, executed by wazero's interpreter
+# and compiler backends), so no self-hosted runner is required — the
+# whole thing runs on GitHub-provided compute.
+#
+# Two roles:
+#
+#   BASELINE runs (push to main / schedule / workflow_dispatch):
+#     Publish bench.out as artifact "wasm-baseline" — subsequent PR runs
+#     pull it back and diff against it via benchstat.
+#
+#   CANDIDATE runs (any pull_request against main):
+#     Run the same bench on the PR head, download the freshest baseline,
+#     benchstat them, publish the diff to the step-summary panel, post
+#     the same table as an upserted PR comment, and fail if any
+#     benchmark regressed beyond REGRESSION_THRESHOLD_PCT.
+#
+# Unlike z15-bench.yml (which SSHes to a shared LPAR and is label-gated),
+# this workflow is cheap enough to run on every PR without a gate — a
+# wazero bench pass costs ~30 seconds of ubuntu-24.04 time.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'matchlen.wat'
+      - 'matchlen.wasm'
+      - 'matchlen_wasm.go'
+      - 'generate.go'
+      - 'verify/**'
+      - '.github/workflows/wasm-bench.yml'
+  schedule:
+    - cron: '31 5 * * 0'  # Sundays 05:31 UTC (14min after z15-bench)
+
+concurrency:
+  group: wasm-bench-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Fail the job on any benchmark whose sec/op regressed by more than
+  # this percent with statistical significance (benchstat p < 0.05).
+  # Tuned to catch real code-path regressions while riding through the
+  # ~2-3% wall-clock jitter typical on shared GH runners.
+  REGRESSION_THRESHOLD_PCT: '5'
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Determine role
+        id: role
+        run: |
+          case "${{ github.event_name }}" in
+            pull_request) echo "role=candidate" >> $GITHUB_OUTPUT ;;
+            *)            echo "role=baseline"  >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Run wazero-hosted matchlen bench
+        run: |
+          set -eo pipefail
+          cd verify
+          # Warm the compile+instantiate path by running the sanity check
+          # once (wazero JITs on first Call), then measure. count=6 gives
+          # benchstat tight confidence intervals; -benchtime=1s is enough
+          # to make ns/op stable at these sizes without blowing wall clock.
+          go test -run=^$ -bench='^BenchmarkMatchlen' -benchmem \
+            -count=6 -benchtime=1s -timeout=600s \
+            . 2>&1 | grep -E '^(Benchmark|goos:|goarch:|pkg:|cpu:)' > ../bench.out
+          wc -l ../bench.out
+
+      - name: Publish summary
+        run: |
+          {
+            echo "## wasm-bench (wazero on ubuntu-24.04)"
+            echo ""
+            echo '```'
+            cat bench.out
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+
+      # -----------------------------------------------------------------
+      # BASELINE role: publish artifact PR runs will pull.
+      # -----------------------------------------------------------------
+      - name: Upload baseline artifact
+        if: steps.role.outputs.role == 'baseline'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-baseline
+          path: bench.out
+          retention-days: 90
+
+      # -----------------------------------------------------------------
+      # CANDIDATE role: fetch baseline, benchstat, diff, comment, gate.
+      # -----------------------------------------------------------------
+      - name: Install benchstat
+        if: steps.role.outputs.role == 'candidate'
+        run: |
+          go install golang.org/x/perf/cmd/benchstat@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+
+      - name: Download main-branch baseline
+        if: steps.role.outputs.role == 'candidate'
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eo pipefail
+          run_id=$(gh api "repos/${{ github.repository }}/actions/workflows/wasm-bench.yml/runs?branch=main&status=success&per_page=1" \
+                   --jq '.workflow_runs[0].id' || echo "")
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "No successful main-branch run found — nothing to diff against." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          mkdir -p baseline
+          gh run download "$run_id" -R "${{ github.repository }}" -n wasm-baseline -D baseline || {
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "Baseline artifact wasm-baseline missing (retention expired?)." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          echo "found=true" >> $GITHUB_OUTPUT
+          echo "run_id=$run_id" >> $GITHUB_OUTPUT
+          echo "Baseline downloaded from run $run_id ($(wc -l < baseline/bench.out) lines)." >> $GITHUB_STEP_SUMMARY
+
+      - name: Compare with benchstat
+        if: steps.role.outputs.role == 'candidate' && steps.baseline.outputs.found == 'true'
+        id: diff
+        run: |
+          set -eo pipefail
+          benchstat -format text baseline/bench.out bench.out > diff.txt || true
+          echo "## wasm-bench benchstat: main run ${{ steps.baseline.outputs.run_id }} vs PR head" >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat diff.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          threshold="${REGRESSION_THRESHOLD_PCT}"
+          regressed=$(awk -v thr="$threshold" '
+            /sec\/op/          { section="time"; next }
+            /B\/s/             { section="throughput"; next }
+            /allocs\/op|B\/op/ { section="alloc"; next }
+            /^goos:|^goarch:|^pkg:|^cpu:/ { next }
+            /^[[:space:]]*$/               { next }
+            /^[[:space:]]*│/               { next }
+            {
+              for (i=1; i<=NF; i++) {
+                if (match($i, /^\+[0-9]+(\.[0-9]+)?%$/)) {
+                  val = substr($i, 2, length($i)-2) + 0
+                  if (section=="time" && val > thr) { print $1, $i; found=1 }
+                }
+                if (match($i, /^-[0-9]+(\.[0-9]+)?%$/)) {
+                  val = substr($i, 2, length($i)-2) + 0
+                  if (section=="throughput" && val > thr) { print $1, $i, "(throughput)"; found=1 }
+                }
+              }
+            }
+            END { exit !found }
+          ' diff.txt) && regressed_found=1 || regressed_found=0
+          if [ "$regressed_found" = "1" ]; then
+            echo "regressed=true" >> $GITHUB_OUTPUT
+            {
+              echo ""
+              echo "### ❌ Regressions above ${threshold}% threshold"
+              echo '```'
+              echo "$regressed"
+              echo '```'
+            } >> $GITHUB_STEP_SUMMARY
+          else
+            echo "regressed=false" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ✅ No sec/op or MB/s regression above ${REGRESSION_THRESHOLD_PCT}% threshold" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Comment on PR (upsert)
+        if: steps.role.outputs.role == 'candidate' && steps.baseline.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eo pipefail
+          marker='<!-- wasm-bench:diff -->'
+          body=$(mktemp)
+          {
+            echo "$marker"
+            echo "## wasm-bench benchstat vs main (run ${{ steps.baseline.outputs.run_id }})"
+            echo ""
+            echo '```'
+            cat diff.txt
+            echo '```'
+            if [ "${{ steps.diff.outputs.regressed }}" = "true" ]; then
+              echo ""
+              echo "> ❌ One or more benchmarks regressed beyond the **${REGRESSION_THRESHOLD_PCT}%** threshold. See workflow logs."
+            else
+              echo ""
+              echo "> ✅ No regression above the **${REGRESSION_THRESHOLD_PCT}%** threshold."
+            fi
+          } > "$body"
+          pr='${{ github.event.pull_request.number }}'
+          existing=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" \
+                     --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -f body="$(cat "$body")"
+          else
+            gh pr comment "$pr" --body-file "$body"
+          fi
+
+      - name: Fail on regression
+        if: steps.role.outputs.role == 'candidate' && steps.diff.outputs.regressed == 'true'
+        run: |
+          echo "One or more benchmarks regressed beyond ${REGRESSION_THRESHOLD_PCT}% under wazero."
+          exit 1
+
+      - name: Upload candidate artifact (always)
+        if: steps.role.outputs.role == 'candidate'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-candidate-pr-${{ github.event.pull_request.number }}
+          path: |
+            bench.out
+            diff.txt
+          retention-days: 30
+          if-no-files-found: warn
