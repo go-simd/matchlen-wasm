@@ -27,6 +27,12 @@
 // scalar 8-byte-word loop is around 16 bytes of input — anything bigger
 // starts to win. LZ4 match extension routinely runs into kilobyte-sized
 // tails, so this kernel is a real gain in that consumer.
+//
+// (Test-only comment: this PR exercises the wasm-bench pipeline end-to-end.
+// The change is a docstring-only edit that touches matchlen_wasm.go so the
+// pull_request paths filter fires, but leaves matchlen.wat / matchlen.wasm
+// and the wazero benchmark harness untouched. Expected outcome: wasm-drift
+// passes trivially and wasm-bench posts a "no regression" comment.)
 
 //go:build wasm
 
