@@ -7,29 +7,93 @@ name: z15-bench
 # has a stable release, and streams the raw output back to the GH Actions
 # step-summary panel.
 #
+# Two roles:
+#
+#   BASELINE runs (main branch push / schedule / manual dispatch):
+#     Publish bench.out as artifact "z15-baseline" — subsequent PR runs pull
+#     it back and diff against it.
+#
+#   CANDIDATE runs (pull_request labeled "bench-z15"):
+#     Run the same sweep on the PR head, download the freshest baseline
+#     artifact from a successful main-branch run, `benchstat` them, and:
+#       * publish the delta table to the PR's step-summary panel
+#       * post the same table as a PR comment (updated in-place)
+#       * exit non-zero if any benchmark regressed with statistical
+#         significance beyond REGRESSION_THRESHOLD_PCT
+#
+# The label gate keeps the shared LPAR from being flooded by every PR — a
+# maintainer opts in per PR by adding "bench-z15".
+#
 # Secrets required:
 #   LINUX1_SSH_KEY      — the private key that authorises z15-ci-runner
 #   LINUX1_KNOWN_HOSTS  — the host key fingerprint (populated via ssh-keyscan)
 #
-# Trigger: manual dispatch, or push touching this file, or scheduled weekly.
-# Scheduled cadence is a light Sunday-morning sweep so we notice trend drift
-# without spamming the shared LPAR every push.
+# Trigger: manual dispatch, or push touching this file, or scheduled weekly,
+# or a pull_request carrying the "bench-z15" label.
 
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - '.github/workflows/z15-bench.yml'
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - '.github/workflows/z15-bench.yml'
+      - 'matchlen_wasm.go'
+      - 'matchlen.wat'
+      - 'verify/**'
   schedule:
     - cron: '17 5 * * 0'  # Sundays 05:17 UTC
 
 concurrency:
-  group: z15-bench
+  group: z15-bench-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # Regression threshold: fail if any benchmark's geomean shifts more than
+  # this many % slower with p < 0.05. Tuned to catch real code-path
+  # regressions while riding through the ~2-3% jitter typical on a shared
+  # LPAR. Bump if the LPAR gets noisier.
+  REGRESSION_THRESHOLD_PCT: '5'
+
 jobs:
-  bench:
+  gate:
+    # Label gate: PR runs only fire when a maintainer has stuck the
+    # "bench-z15" label on the PR — the LPAR is a shared resource.
     runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      role: ${{ steps.decide.outputs.role }}
+    steps:
+      - id: decide
+        run: |
+          set -e
+          case "${{ github.event_name }}" in
+            pull_request)
+              if [ "${{ contains(github.event.pull_request.labels.*.name, 'bench-z15') }}" = "true" ]; then
+                echo "run=true"  >> $GITHUB_OUTPUT
+                echo "role=candidate" >> $GITHUB_OUTPUT
+              else
+                echo "run=false" >> $GITHUB_OUTPUT
+                echo "PR is not labeled bench-z15 — skipping z15 bench." >> $GITHUB_STEP_SUMMARY
+              fi
+              ;;
+            *)
+              echo "run=true"  >> $GITHUB_OUTPUT
+              echo "role=baseline" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+  bench:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write   # so the candidate role can post the diff comment
     steps:
       - uses: actions/checkout@v4
 
@@ -62,24 +126,173 @@ jobs:
             go get -t github.com/go-simd/$repo@latest > /dev/null 2>&1
             printf '\n== %s ==\n' "$repo"
             go test github.com/go-simd/$repo/... -run=^$ -bench=. -benchmem \
-              -count=3 -benchtime=1s -timeout=300s 2>&1 | grep -E '^Benchmark|MB/s' | head -30
+              -count=6 -benchtime=1s -timeout=600s 2>&1 | grep -E '^(Benchmark|goos:|goarch:|pkg:|cpu:)' | head -60
           done
           EOF
           cp "$out" bench.out
           wc -l bench.out
 
-      - name: Publish summary
-        run: |
-          {
-            echo "## z15 bench (real IBM z15 LPAR, Ubuntu 6.8, go1.26.4)"
-            echo ""
-            echo '```'
-            cat bench.out
-            echo '```'
-          } >> $GITHUB_STEP_SUMMARY
-
-      - uses: actions/upload-artifact@v4
+      # -----------------------------------------------------------------
+      # BASELINE role: main / schedule / dispatch — publish bench.out as
+      # the artifact PR runs will pull.
+      # -----------------------------------------------------------------
+      - name: Upload baseline artifact
+        if: needs.gate.outputs.role == 'baseline'
+        uses: actions/upload-artifact@v4
         with:
-          name: z15-bench-output
+          name: z15-baseline
           path: bench.out
           retention-days: 90
+
+      # -----------------------------------------------------------------
+      # CANDIDATE role: PR run — grab freshest baseline, benchstat-diff,
+      # publish table + comment, fail on regression.
+      # -----------------------------------------------------------------
+      - name: Set up Go (for benchstat)
+        if: needs.gate.outputs.role == 'candidate'
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install benchstat
+        if: needs.gate.outputs.role == 'candidate'
+        run: |
+          go install golang.org/x/perf/cmd/benchstat@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+
+      - name: Download main-branch baseline
+        if: needs.gate.outputs.role == 'candidate'
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eo pipefail
+          # Find the most recent successful main-branch run of THIS workflow
+          # and download its z15-baseline artifact. If none exists (fresh
+          # repo or artifact expired), skip the diff — we still upload the
+          # candidate as an artifact for hand-inspection.
+          run_id=$(gh api "repos/${{ github.repository }}/actions/workflows/z15-bench.yml/runs?branch=main&status=success&per_page=1" \
+                   --jq '.workflow_runs[0].id' || echo "")
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "No successful main-branch run found — nothing to diff against." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          mkdir -p baseline
+          gh run download "$run_id" -R "${{ github.repository }}" -n z15-baseline -D baseline || {
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "Baseline artifact z15-baseline missing from run $run_id (retention expired?)." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          echo "found=true" >> $GITHUB_OUTPUT
+          echo "run_id=$run_id" >> $GITHUB_OUTPUT
+          echo "Baseline downloaded from run $run_id ($(wc -l < baseline/bench.out) lines)." >> $GITHUB_STEP_SUMMARY
+
+      - name: Compare with benchstat
+        if: needs.gate.outputs.role == 'candidate' && steps.baseline.outputs.found == 'true'
+        id: diff
+        run: |
+          set -eo pipefail
+          benchstat -format text baseline/bench.out bench.out > diff.txt || true
+          # benchstat prints a per-benchmark table; anything with a "~" is
+          # not statistically significant, a signed %-delta with a "vs base"
+          # line means real movement. We fail if any regression exceeds the
+          # threshold and is marked significant.
+          echo "## z15 benchstat: baseline (main run ${{ steps.baseline.outputs.run_id }}) vs PR head" >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat diff.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Regression scan. Modern benchstat text output is a
+          # box-drawn table where "sec/op" and "B/s" are section headers
+          # and every data row leads with the (Benchmark-prefix-stripped)
+          # name. Insignificant deltas print as "~"; those don't match our
+          # signed-percent regex, so noise is dropped automatically.
+          # sec/op:  larger  = slower → flag positive % above threshold
+          # B/s:     smaller = slower → flag negative % above threshold
+          threshold="${REGRESSION_THRESHOLD_PCT}"
+          regressed=$(awk -v thr="$threshold" '
+            /sec\/op/          { section="time"; next }
+            /B\/s/             { section="throughput"; next }
+            /allocs\/op|B\/op/ { section="alloc"; next }
+            /^goos:|^goarch:|^pkg:|^cpu:/ { next }
+            /^[[:space:]]*$/               { next }
+            /^[[:space:]]*│/               { next }
+            {
+              for (i=1; i<=NF; i++) {
+                if (match($i, /^\+[0-9]+(\.[0-9]+)?%$/)) {
+                  val = substr($i, 2, length($i)-2) + 0
+                  if (section=="time" && val > thr) { print $1, $i; found=1 }
+                }
+                if (match($i, /^-[0-9]+(\.[0-9]+)?%$/)) {
+                  val = substr($i, 2, length($i)-2) + 0
+                  if (section=="throughput" && val > thr) { print $1, $i, "(throughput)"; found=1 }
+                }
+              }
+            }
+            END { exit !found }
+          ' diff.txt) && regressed_found=1 || regressed_found=0
+          if [ "$regressed_found" = "1" ]; then
+            echo "regressed=true" >> $GITHUB_OUTPUT
+            {
+              echo ""
+              echo "### ❌ Regressions above ${threshold}% threshold"
+              echo '```'
+              echo "$regressed"
+              echo '```'
+            } >> $GITHUB_STEP_SUMMARY
+          else
+            echo "regressed=false" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ✅ No sec/op or MB/s regression above ${REGRESSION_THRESHOLD_PCT}% threshold" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Comment on PR (upsert)
+        if: needs.gate.outputs.role == 'candidate' && steps.baseline.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eo pipefail
+          marker='<!-- z15-bench:diff -->'
+          body=$(mktemp)
+          {
+            echo "$marker"
+            echo "## z15 benchstat vs main (run ${{ steps.baseline.outputs.run_id }})"
+            echo ""
+            echo '```'
+            cat diff.txt
+            echo '```'
+            if [ "${{ steps.diff.outputs.regressed }}" = "true" ]; then
+              echo ""
+              echo "> ❌ One or more benchmarks regressed beyond the **${REGRESSION_THRESHOLD_PCT}%** threshold. See workflow logs."
+            else
+              echo ""
+              echo "> ✅ No regression above the **${REGRESSION_THRESHOLD_PCT}%** threshold."
+            fi
+          } > "$body"
+          pr='${{ github.event.pull_request.number }}'
+          existing=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" \
+                     --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -f body="$(cat "$body")"
+          else
+            gh pr comment "$pr" --body-file "$body"
+          fi
+
+      - name: Fail on regression
+        if: needs.gate.outputs.role == 'candidate' && steps.diff.outputs.regressed == 'true'
+        run: |
+          echo "One or more benchmarks regressed beyond ${REGRESSION_THRESHOLD_PCT}% on real z15."
+          exit 1
+
+      - name: Upload candidate artifact (always)
+        if: needs.gate.outputs.role == 'candidate'
+        uses: actions/upload-artifact@v4
+        with:
+          name: z15-candidate-pr-${{ github.event.pull_request.number }}
+          path: |
+            bench.out
+            diff.txt
+          retention-days: 30
+          if-no-files-found: warn
