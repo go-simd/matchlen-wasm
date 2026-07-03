@@ -4,7 +4,7 @@
 [![wasm-bench](https://github.com/go-simd/matchlen-wasm/actions/workflows/wasm-bench.yml/badge.svg?branch=main)](https://github.com/go-simd/matchlen-wasm/actions/workflows/wasm-bench.yml)
 [![z15-bench](https://github.com/go-simd/matchlen-wasm/actions/workflows/z15-bench.yml/badge.svg?branch=main)](https://github.com/go-simd/matchlen-wasm/actions/workflows/z15-bench.yml)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
-[![Generator](https://img.shields.io/badge/generator-go--asmgen%2Fwasm%40v0.1.0-1a7f37)](https://github.com/go-asmgen/wasm)
+[![Generator](https://img.shields.io/badge/generator-go--asmgen%2Fasmgen%40v0.6.0-1a7f37)](https://github.com/go-asmgen/asmgen/tree/main/examples/wasm/matchlen)
 
 Pure-Go wasm-SIMD (`v128`) for `go-simd/matchlen`. Go's compiler does not emit
 `v128` from Go source, so the kernel lives in a small companion WebAssembly
