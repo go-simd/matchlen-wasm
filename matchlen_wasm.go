@@ -3,10 +3,11 @@
 // companion WebAssembly module (matchlen.wasm, compiled from matchlen.wat
 // via wat2wasm) and is called from Go via //go:wasmimport.
 //
-// matchlen.wat is programmatically emitted by go-asmgen/wasm/matchlen —
-// see generate.go for the pinned generator version. The regeneration is
-// enforced in CI by .github/workflows/wasm-drift.yml, so the checked-in
-// .wat / .wasm cannot silently diverge from the generator output.
+// matchlen.wat is programmatically emitted by
+// go-asmgen/asmgen/examples/wasm/matchlen — see generate.go for the
+// pinned generator version. The regeneration is enforced in CI by
+// .github/workflows/wasm-drift.yml, so the checked-in .wat / .wasm
+// cannot silently diverge from the generator output.
 //
 // This is the seventh target for go-simd — after the 6 native architectures
 // (amd64/arm64/riscv64/loong64/ppc64le/s390x) it adds js/wasm + wasip1/wasm.
@@ -37,6 +38,8 @@
 
 package matchlenwasm
 
+import "unsafe"
+
 // matchlen16 is the wasm-SIMD kernel imported from the companion module.
 // The caller (MatchLen below) passes byte-slice base pointers as linear
 // memory offsets. The Go wasm ABI translates a []byte header's data pointer
@@ -65,8 +68,13 @@ func MatchLen(a, b []byte) int {
 	// Cast the slice headers' data pointers to wasm linear-memory offsets.
 	// The Go wasm compiler represents Go pointers as i32 offsets into the
 	// module's linear memory, so passing &a[0] here goes across the
-	// wasmimport ABI cleanly. Empty-slice case (limit==0) is guarded above.
-	return int(matchlen16(uint32(uintptr(_pin(a))), uint32(uintptr(_pin(b))), uint32(limit)))
+	// wasmimport ABI cleanly. The *byte→uintptr conversion must go through
+	// unsafe.Pointer (the language does not permit the direct form).
+	// Empty-slice case (limit==0) is guarded above.
+	return int(matchlen16(
+		uint32(uintptr(unsafe.Pointer(_pin(a)))),
+		uint32(uintptr(unsafe.Pointer(_pin(b)))),
+		uint32(limit)))
 }
 
 // _pin returns the address of the underlying byte-slice buffer as an

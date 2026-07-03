@@ -1,11 +1,16 @@
 name: wasm-drift
 
 # Guardrails against hand-edited matchlen.wat / matchlen.wasm drift.
-# The canonical source of truth is the go-asmgen/wasm/matchlen generator
-# (pinned at a specific version in generate.go). This job runs
+# The canonical source of truth is the go-asmgen/asmgen/examples/wasm/matchlen
+# generator (pinned at a specific version in generate.go). This job runs
 # `go generate ./...` + `wat2wasm` and fails if the checked-in
 # matchlen.wat or matchlen.wasm don't match the regenerated output — so
 # a contributor cannot silently diverge the WAT from the emitter.
+#
+# Also builds matchlen_wasm.go for GOOS=js/wasip1 GOARCH=wasm — the
+# //go:wasmimport wrapper is only compiled on those targets, so without
+# this step a wrapper-side regression would slip past every other CI
+# workflow (verify/ uses the host GOOS).
 
 on:
   push:
@@ -54,7 +59,7 @@ jobs:
               echo "## ❌ matchlen.wat is out of sync with the pinned generator"
               echo ""
               echo "The committed matchlen.wat differs from the output of the pinned"
-              echo "generator (\`go-asmgen/wasm/matchlen\`, see \`generate.go\`)."
+              echo "generator (\`go-asmgen/asmgen/examples/wasm/matchlen\`, see \`generate.go\`)."
               echo ""
               echo "Run \`go generate ./... && wat2wasm matchlen.wat -o matchlen.wasm\`"
               echo "at the repo root and commit the regenerated files."
@@ -72,6 +77,14 @@ jobs:
             exit 1
           fi
           echo "## ✅ Both matchlen.wat and matchlen.wasm match the pinned generator." >> $GITHUB_STEP_SUMMARY
+
+      - name: Build the //go:wasmimport wrapper (GOOS=js and wasip1)
+        # verify/ runs under the host GOOS, so a wrapper-side regression
+        # (unsafe pointer conversion, //go:wasmimport signature drift, etc.)
+        # would otherwise slip past every other CI workflow.
+        run: |
+          GOOS=js     GOARCH=wasm go build ./...
+          GOOS=wasip1 GOARCH=wasm go build ./...
 
       - name: Run wazero verify (11 e2e cases)
         run: |

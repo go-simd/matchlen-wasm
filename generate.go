@@ -12,11 +12,9 @@
 // picks it up on every host (the //go:build wasm on matchlen_wasm.go
 // would exclude it during a non-wasm generate).
 //
-// Migrated from the standalone github.com/go-asmgen/wasm module (pin was
-// @v0.1.0) to the folded-in path in go-asmgen/asmgen@v0.6.0. Both paths
-// resolve to byte-identical generator output; the standalone module's
-// tags remain immutable, so this is a rebase for clarity, not a
-// behavioural change.
+// The wasm surface used to live in a standalone module; it is now
+// folded into go-asmgen/asmgen as a peer package. This pin points at
+// go-asmgen/asmgen@v0.6.0 (the first tag that includes the fold).
 
 //go:generate sh -c "go run github.com/go-asmgen/asmgen/examples/wasm/matchlen@v0.6.0 > matchlen.wat"
 

@@ -24,9 +24,9 @@ Wasm-SIMD (`v128`) has been a stable proposal since 2021 and every major
 browser + wazero + wasmtime supports it. The **only** thing missing was a way
 to write `v128` code from Go. This module solves that: `matchlen.wat` is
 programmatically emitted by
-[`go-asmgen/wasm/matchlen`](https://github.com/go-asmgen/wasm) (pinned in
-[`generate.go`](generate.go)), and `//go:wasmimport` binds the compiled
-kernel into the Go host.
+[`go-asmgen/asmgen/examples/wasm/matchlen`](https://github.com/go-asmgen/asmgen/tree/main/examples/wasm/matchlen)
+(pinned in [`generate.go`](generate.go)), and `//go:wasmimport` binds the
+compiled kernel into the Go host.
 
 ## Architecture
 
@@ -53,8 +53,9 @@ the Go slice sits on. No copy.
 
 ## Build
 
-`matchlen.wat` is regenerated from the pinned `go-asmgen/wasm/matchlen`
-generator via `go generate`; `wat2wasm` compiles it to `matchlen.wasm`.
+`matchlen.wat` is regenerated from the pinned
+`go-asmgen/asmgen/examples/wasm/matchlen` generator via `go generate`;
+`wat2wasm` compiles it to `matchlen.wasm`.
 
 ```sh
 # darwin/arm64:  brew install wabt
@@ -211,10 +212,12 @@ reference consumer other `go-simd/*-wasm` repos are expected to copy.
 
 1. **This module ships** — `matchlen16` on wasm-SIMD via the pinned
    generator. Consumer opts in per-call site.
-2. **~~Automate: teach `go-asmgen` to emit `.wat`~~** — done. See
-   [`go-asmgen/wasm`](https://github.com/go-asmgen/wasm) for the emitter
-   (v0.3.0 as of writing, 9 kernels shipped: matchlen, hex, hex_decode,
-   popcount, toupper, memchr, isascii, utf8len, json_clean).
+2. **~~Automate: teach `go-asmgen` to emit `.wat`~~** — done. See the
+   [`wasm/` package](https://github.com/go-asmgen/asmgen/tree/main/wasm)
+   and [`examples/wasm/`](https://github.com/go-asmgen/asmgen/tree/main/examples/wasm)
+   in `go-asmgen/asmgen` (v0.6.0 as of writing, 9 kernels shipped:
+   matchlen, hex, hex_decode, popcount, toupper, memchr, isascii,
+   utf8len, json_clean).
 3. **Sibling consumers**: `go-simd/hex-wasm`, `go-simd/popcount-wasm`,
    … one repo per kernel with the same three-workflow CI pattern.
 4. **Native fold**: if the Go compiler ever gains `v128` emission (SIMD
