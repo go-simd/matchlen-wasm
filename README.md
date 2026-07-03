@@ -93,44 +93,70 @@ _, _ = runtime.NewHostModuleBuilder("env").
     Instantiate(ctx)
 ```
 
-## Measured performance
+## Measured performance — 3 host platforms
 
-Real numbers from `go test -bench=BenchmarkMatchlen ./verify` on **darwin/arm64
-Apple M4 Max, wazero 1.12.0**. Both columns run the SAME test data (identical
-byte slices, so the whole input is scanned end-to-end):
+`go test -bench=BenchmarkMatchlen ./verify` on **wazero 1.12.0**, run on three
+hosts (identical test data — both columns scan the full input end-to-end):
 
-| input size | scalar Go (compiler autovector) | wasm-SIMD via wazero | ratio |
+### darwin/arm64 — Apple M4 Max
+
+| input | scalar (autovector) | wasm-SIMD | ratio |
 | ---: | ---: | ---: | ---: |
-| 8 B | 1.1 ns (7.6 GB/s) | 35.9 ns (0.2 GB/s) | **0.03×** |
-| 64 B | 5.2 ns (12.3 GB/s) | 32.6 ns (2.0 GB/s) | **0.16×** |
-| 256 B | 19.2 ns (13.3 GB/s) | 44.7 ns (5.7 GB/s) | **0.43×** |
-| 1 KiB | 89 ns (11.4 GB/s) | 96 ns (10.7 GB/s) | **0.94×** |
-| **4 KiB** | 318 ns (12.9 GB/s) | 267 ns (15.4 GB/s) | **1.19×** ← crossover |
-| 16 KiB | 1316 ns (12.5 GB/s) | 937 ns (17.5 GB/s) | **1.40×** |
-| 64 KiB | 5300 ns (12.4 GB/s) | 3703 ns (17.7 GB/s) | **1.43×** |
-| 1 MiB | 79 µs (13.2 GB/s) | 57 µs (18.3 GB/s) | **1.39×** |
+| 64 B | 12.3 GB/s | 2.0 GB/s | 0.16× |
+| 1 KiB | 11.4 GB/s | 10.7 GB/s | 0.94× |
+| **4 KiB** | 12.9 GB/s | 15.4 GB/s | **1.19×** ← crossover |
+| 64 KiB | 12.4 GB/s | 17.7 GB/s | 1.43× |
+| 1 MiB | 13.2 GB/s | 18.3 GB/s | **1.39×** |
 
-**Read this table honestly:**
+### linux/amd64 — AMD EPYC 7763 (GitHub Actions `ubuntu-24.04`)
 
-- **Crossover ~4 KiB**, not 40 bytes. Below that, wazero's per-call overhead
-  (~30 ns, dominant here) beats the SIMD gain.
-- **Peak win ~1.4×**, not 3×. The Go compiler's autovectorization of the
-  scalar 8-byte-word + XOR + `TrailingZeros64` loop already saturates memory
-  bandwidth (~13 GB/s) on M4 Max; the wasm-SIMD path only pulls ~40% more (up
-  to ~18 GB/s) before hitting the same ceiling.
-- **Fixed call overhead ~30 ns.** Any consumer paying that per-call cost for
-  a match tail smaller than the crossover would lose. LZ4 match-extension
-  tails average 100 B – 2 KiB, which is **below** the crossover here — so
-  on M4 the wasm-SIMD path is NOT the pragmatic pick for lz4 (native
-  matchlen wins). On a browser-only wasm target (where the alternative is
-  the scalar loop at 7-13 GB/s, no native SIMD available), the ~1.4× at
-  large inputs is a real gain.
+| input | scalar (autovector) | wasm-SIMD | ratio |
+| ---: | ---: | ---: | ---: |
+| 64 B | 4.9 GB/s | 0.9 GB/s | 0.18× |
+| 256 B | 5.1 GB/s | 2.6 GB/s | 0.51× |
+| **1 KiB** | 5.0 GB/s | 4.8 GB/s | **0.96×** ← crossover |
+| 4 KiB | 5.0 GB/s | 6.4 GB/s | 1.28× |
+| 64 KiB | 5.1 GB/s | 7.2 GB/s | 1.41× |
+| 1 MiB | 5.1 GB/s | 7.2 GB/s | **1.42×** |
 
-The Apple M4 Max's tight coupling between the CPU pipeline and memory system
-makes it a hostile host for wasm-SIMD wins — the scalar path is already
-near-optimal. Crossover + peak-win on x86_64 (AVX2 wasm-SIMD → SSE lowering)
-or Linux/arm64 servers are likely more favorable; benching there is a
-follow-up.
+### linux/arm64 — ARM Neoverse (GitHub Actions `ubuntu-24.04-arm`)
+
+| input | scalar (autovector) | wasm-SIMD | ratio |
+| ---: | ---: | ---: | ---: |
+| 64 B | 6.6 GB/s | 0.8 GB/s | 0.12× |
+| 1 KiB | 7.0 GB/s | 4.9 GB/s | 0.70× |
+| **4 KiB** | 7.0 GB/s | 6.8 GB/s | **0.97×** ← crossover |
+| 64 KiB | 7.1 GB/s | 7.7 GB/s | 1.09× |
+| 1 MiB | 7.1 GB/s | 7.8 GB/s | **1.10×** |
+
+### Cross-platform summary
+
+| Host | Scalar ceiling | Wasm ceiling | Peak win | Crossover |
+| --- | ---: | ---: | ---: | ---: |
+| darwin/arm64 M4 | 13.2 GB/s | 18.3 GB/s | 1.39× | 4 KiB |
+| linux/amd64 EPYC | 5.1 GB/s | 7.2 GB/s | 1.42× | 1 KiB |
+| linux/arm64 Neoverse | 7.1 GB/s | 7.8 GB/s | 1.10× | 4 KiB |
+
+**Read honestly:**
+
+- **Peak wasm/scalar win: 1.10× – 1.42×** across hosts. Not the 3× I first
+  guessed. The Go compiler's autovectorization is remarkably tight, so the
+  wasm-SIMD path only pulls modest additional gains after the boundary
+  crossing.
+- **Crossover: 1 KiB – 4 KiB** depending on how fast the scalar path is
+  (fast scalar = later crossover). Below crossover, wazero's ~30-80 ns
+  per-call overhead beats the SIMD win.
+- **LZ4 match tails (100 B – 2 KiB) are BELOW the crossover on every host
+  measured** — so on any of these targets, wasm-SIMD is NOT the pragmatic
+  pick for LZ4 decode.
+- **linux/arm64 Neoverse gets the smallest win (1.10×)** — its compiler
+  autovector nearly saturates already, leaving little for wasm-SIMD to
+  claim.
+
+Where does wasm-SIMD win in absolute terms? Two cases:
+1. Browser-only targets (no native SIMD is available; the alternative is
+   scalar Go alone, and 1.4× is real gain).
+2. Very large inputs (4 KiB+ on M4/EPYC, 16 KiB+ on Neoverse).
 
 ## Trade-offs vs the native-arch path
 
