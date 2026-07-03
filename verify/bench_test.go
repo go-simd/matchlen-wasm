@@ -121,6 +121,14 @@ func BenchmarkMatchlenWasm(b *testing.B) {
 		b.Run(sizeName(n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
+				// SYNTHETIC REGRESSION (test/wasm-bench-negative branch).
+				// Adds ~50ns of pointless work per iteration to prove the
+				// wasm-bench workflow correctly detects real regressions.
+				// This is a self-check artifact — will be closed without
+				// merge and does NOT affect main.
+				for j := 0; j < 50; j++ {
+					_ = j * j
+				}
 				_, _ = fn.Call(ctx, uint64(aOff), uint64(bOff), limit)
 			}
 		})
