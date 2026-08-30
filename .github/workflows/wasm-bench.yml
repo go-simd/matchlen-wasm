@@ -55,9 +55,9 @@ jobs:
       actions: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: 'stable'
 
@@ -97,7 +97,7 @@ jobs:
       # -----------------------------------------------------------------
       - name: Upload baseline artifact
         if: steps.role.outputs.role == 'baseline'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wasm-baseline
           path: bench.out
@@ -225,7 +225,7 @@ jobs:
 
       - name: Upload candidate artifact (always)
         if: steps.role.outputs.role == 'candidate'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wasm-candidate-pr-${{ github.event.pull_request.number }}
           path: |
