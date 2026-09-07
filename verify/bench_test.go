@@ -14,35 +14,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
-	"math/bits"
 	"os"
 	"testing"
 
 	"github.com/tetratelabs/wazero"
 )
-
-// scalarMatchLen is the reference Go implementation of matchlen, using the
-// standard 8-byte-word XOR + TrailingZeros trick that the go-simd/matchlen
-// generic fallback uses. Faster than a byte loop by ~8×; this is the fair
-// baseline the wasm SIMD kernel has to beat.
-func scalarMatchLen(a, b []byte) int {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	i := 0
-	for i+8 <= n {
-		if d := binary.LittleEndian.Uint64(a[i:]) ^ binary.LittleEndian.Uint64(b[i:]); d != 0 {
-			return i + bits.TrailingZeros64(d)>>3
-		}
-		i += 8
-	}
-	for i < n && a[i] == b[i] {
-		i++
-	}
-	return i
-}
 
 func benchSizes() []int {
 	return []int{8, 16, 32, 64, 128, 256, 1024, 4096, 16384, 65536, 1024 * 1024}

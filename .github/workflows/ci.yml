@@ -1,0 +1,77 @@
+name: ci
+
+# What the other four workflows do NOT do.
+#
+# wasm-drift proves the checked-in .wat/.wasm match the generator, and the two
+# bench workflows measure how fast the kernel is — but every one of them is
+# filtered by path, so a change to the Go wrapper or to verify/ was checked by
+# nothing at all. And nothing ran the kernel against an expected ANSWER: the
+# verify command printed PASS/FAIL and no workflow called it.
+#
+# This runs on every push and every pull request, with no path filter, because
+# a gate that only fires for some files is not a gate.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  kernel:
+    name: kernel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # wazero compiles to host code on amd64 and arm64 and interprets
+        # elsewhere; the tests run BOTH engines on each of these, so the v128
+        # kernel is executed by four distinct implementations of the same
+        # instructions.
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache-dependency-path: verify/go.sum
+      - name: gofmt
+        if: matrix.os == 'ubuntu-24.04'
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-clean:"; echo "$unformatted"
+            exit 1
+          fi
+      - name: Vet
+        working-directory: verify
+        run: go vet ./...
+      - name: Run the kernel against the reference
+        working-directory: verify
+        run: go test -count=1 ./...
+
+  wrapper:
+    # The //go:wasmimport wrapper compiles only for the wasm targets, so a
+    # host-GOOS build says nothing about it. wasm-drift builds it too, but only
+    # when the .wat changes — which is never, when the wrapper is what changed.
+    name: wrapper (${{ matrix.goos }}/wasm)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [js, wasip1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: Build
+        run: GOOS=${{ matrix.goos }} GOARCH=wasm go build ./...
+      - name: Vet
+        run: GOOS=${{ matrix.goos }} GOARCH=wasm go vet ./...
