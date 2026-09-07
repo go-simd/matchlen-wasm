@@ -52,14 +52,19 @@ jobs:
       - name: Vet
         working-directory: verify
         run: go vet ./...
-      - name: Run the kernel against the reference
+      # This also compiles testdata/wrappercheck for wasip1 and RUNS it under
+      # wazero, which is the only way the //go:wasmimport wrapper is executed
+      # rather than merely built.
+      - name: Run the kernel and the wrapper against the reference
         working-directory: verify
         run: go test -count=1 ./...
 
   wrapper:
-    # The //go:wasmimport wrapper compiles only for the wasm targets, so a
-    # host-GOOS build says nothing about it. wasm-drift builds it too, but only
-    # when the .wat changes — which is never, when the wrapper is what changed.
+    # The wrapper is EXECUTED by the kernel job above, on wasip1. This job is
+    # about js/wasm, which no runtime here can execute: it compiles the wrapper
+    # for both wasm targets, because a target that is only ever built is at
+    # least built on every commit. (wasm-drift builds them too, but only when
+    # the .wat changes — which is never, when the wrapper is what changed.)
     name: wrapper (${{ matrix.goos }}/wasm)
     runs-on: ubuntu-24.04
     strategy:
