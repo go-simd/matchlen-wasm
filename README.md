@@ -1,5 +1,6 @@
 # matchlen-wasm — wasm-SIMD (v128) for go-simd/matchlen
 
+[![ci](https://github.com/go-simd/matchlen-wasm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/go-simd/matchlen-wasm/actions/workflows/ci.yml)
 [![wasm-drift](https://github.com/go-simd/matchlen-wasm/actions/workflows/wasm-drift.yml/badge.svg?branch=main)](https://github.com/go-simd/matchlen-wasm/actions/workflows/wasm-drift.yml)
 [![wasm-bench](https://github.com/go-simd/matchlen-wasm/actions/workflows/wasm-bench.yml/badge.svg?branch=main)](https://github.com/go-simd/matchlen-wasm/actions/workflows/wasm-bench.yml)
 [![z15-bench](https://github.com/go-simd/matchlen-wasm/actions/workflows/z15-bench.yml/badge.svg?branch=main)](https://github.com/go-simd/matchlen-wasm/actions/workflows/z15-bench.yml)
