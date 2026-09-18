@@ -62,7 +62,7 @@ jobs:
   gate:
     # Label gate: PR runs only fire when a maintainer has stuck the
     # "bench-z15" label on the PR — the LPAR is a shared resource.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       run: ${{ steps.decide.outputs.run }}
       role: ${{ steps.decide.outputs.role }}
@@ -89,7 +89,7 @@ jobs:
   bench:
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       actions: read

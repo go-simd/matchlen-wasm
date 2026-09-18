@@ -66,7 +66,7 @@ jobs:
     # least built on every commit. (wasm-drift builds them too, but only when
     # the .wat changes — which is never, when the wrapper is what changed.)
     name: wrapper (${{ matrix.goos }}/wasm)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
