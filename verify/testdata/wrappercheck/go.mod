@@ -2,7 +2,7 @@
 // compiled by the wrapper test, for wasm, not by a build of this repository.
 module wrappercheck
 
-go 1.26.4
+go 1.27.1
 
 require github.com/go-simd/matchlen-wasm v0.0.0
 
