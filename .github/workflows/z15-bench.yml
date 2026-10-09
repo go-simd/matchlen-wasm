@@ -152,7 +152,7 @@ jobs:
         if: needs.gate.outputs.role == 'candidate'
         uses: actions/setup-go@v7
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
 
       - name: Install benchstat
         if: needs.gate.outputs.role == 'candidate'
