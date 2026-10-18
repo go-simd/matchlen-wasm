@@ -108,8 +108,40 @@ jobs:
           echo "${{ secrets.LINUX1_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      - name: Can the z15 be reached at all
+        id: reach
+        run: |
+          set -uo pipefail
+          # An unreachable host and a regressed benchmark are not the same
+          # answer, and until now they produced the same red. Five of this
+          # workflow's last thirty runs failed; 2026-10-11 said
+          #
+          #     ssh: connect to host 148.100.85.193 port 22: Connection timed out
+          #
+          # which nothing in this repository could have made green, and main
+          # read as broken for the week that followed. The LPAR is a shared
+          # machine on someone else's power and someone else's network; it
+          # being absent is news, not a verdict.
+          if timeout 40 ssh -o BatchMode=yes -o ConnectTimeout=25 \
+               linux1@148.100.85.193 true 2>"$RUNNER_TEMP/ssh.err"; then
+            echo "up=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## The z15 could not be reached, so NOTHING WAS MEASURED"
+              echo
+              echo "The s390x numbers for this run are **absent**, not unchanged."
+              echo
+              echo '```'
+              cat "$RUNNER_TEMP/ssh.err"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=z15 unreachable::nothing was measured on s390x in this run"
+          fi
+
       - name: Bench sweep on real z15
         id: sweep
+        if: steps.reach.outputs.up == 'true'
         run: |
           set -eo pipefail
           out=$(mktemp)
@@ -137,7 +169,7 @@ jobs:
       # the artifact PR runs will pull.
       # -----------------------------------------------------------------
       - name: Upload baseline artifact
-        if: needs.gate.outputs.role == 'baseline'
+        if: steps.reach.outputs.up == 'true' && needs.gate.outputs.role == 'baseline'
         uses: actions/upload-artifact@v7
         with:
           name: z15-baseline
@@ -149,19 +181,19 @@ jobs:
       # publish table + comment, fail on regression.
       # -----------------------------------------------------------------
       - name: Set up Go (for benchstat)
-        if: needs.gate.outputs.role == 'candidate'
+        if: steps.reach.outputs.up == 'true' && needs.gate.outputs.role == 'candidate'
         uses: actions/setup-go@v7
         with:
           go-version: '1.27.2'
 
       - name: Install benchstat
-        if: needs.gate.outputs.role == 'candidate'
+        if: steps.reach.outputs.up == 'true' && needs.gate.outputs.role == 'candidate'
         run: |
           go install golang.org/x/perf/cmd/benchstat@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
 
       - name: Download main-branch baseline
-        if: needs.gate.outputs.role == 'candidate'
+        if: steps.reach.outputs.up == 'true' && needs.gate.outputs.role == 'candidate'
         id: baseline
         env:
           GH_TOKEN: ${{ github.token }}
@@ -189,7 +221,7 @@ jobs:
           echo "Baseline downloaded from run $run_id ($(wc -l < baseline/bench.out) lines)." >> $GITHUB_STEP_SUMMARY
 
       - name: Compare with benchstat
-        if: needs.gate.outputs.role == 'candidate' && steps.baseline.outputs.found == 'true'
+        if: steps.reach.outputs.up == 'true' && needs.gate.outputs.role == 'candidate' && steps.baseline.outputs.found == 'true'
         id: diff
         run: |
           set -eo pipefail
@@ -249,7 +281,7 @@ jobs:
           fi
 
       - name: Comment on PR (upsert)
-        if: needs.gate.outputs.role == 'candidate' && steps.baseline.outputs.found == 'true'
+        if: steps.reach.outputs.up == 'true' && needs.gate.outputs.role == 'candidate' && steps.baseline.outputs.found == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -281,13 +313,13 @@ jobs:
           fi
 
       - name: Fail on regression
-        if: needs.gate.outputs.role == 'candidate' && steps.diff.outputs.regressed == 'true'
+        if: steps.reach.outputs.up == 'true' && needs.gate.outputs.role == 'candidate' && steps.diff.outputs.regressed == 'true'
         run: |
           echo "One or more benchmarks regressed beyond ${REGRESSION_THRESHOLD_PCT}% on real z15."
           exit 1
 
       - name: Upload candidate artifact (always)
-        if: needs.gate.outputs.role == 'candidate'
+        if: steps.reach.outputs.up == 'true' && needs.gate.outputs.role == 'candidate'
         uses: actions/upload-artifact@v7
         with:
           name: z15-candidate-pr-${{ github.event.pull_request.number }}
@@ -296,3 +328,21 @@ jobs:
             diff.txt
           retention-days: 30
           if-no-files-found: warn
+
+      # ⛔ THE ASYMMETRY, and it is the point of this file's change.
+      #
+      # A baseline run -- schedule, dispatch, a push to this workflow -- asked
+      # nothing. The host being down costs it a refresh of the artifact, and
+      # reddening main for someone else's network is a false report.
+      #
+      # A candidate run is a maintainer who put the `bench-z15` label on a pull
+      # request BECAUSE they wanted an s390x answer. An answer that was never
+      # obtained must not read as "no regression": that is the whole failure
+      # mode of a check which cannot tell silence from approval.
+      - name: A candidate run that measured nothing is not a pass
+        if: steps.reach.outputs.up != 'true' && needs.gate.outputs.role == 'candidate'
+        run: |
+          echo "::error title=z15 unreachable::this pull request asked for an s390x measurement and none was obtained"
+          echo "The z15 did not answer, so no benchmark ran and nothing was compared."
+          echo "Re-run this job when the LPAR is back; the label is already set."
+          exit 1
