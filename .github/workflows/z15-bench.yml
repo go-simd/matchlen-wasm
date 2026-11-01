@@ -184,7 +184,7 @@ jobs:
         if: steps.reach.outputs.up == 'true' && needs.gate.outputs.role == 'candidate'
         uses: actions/setup-go@v7
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.3'
 
       - name: Install benchstat
         if: steps.reach.outputs.up == 'true' && needs.gate.outputs.role == 'candidate'
